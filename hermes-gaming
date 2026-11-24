@@ -1,0 +1,601 @@
+#!/usr/bin/env python3
+"""hermes-gaming — gaming mode for the local Hermes model (llama.cpp).
+
+on      unloads the model from the GPU (VRAM freed), hides the GGUF and
+        blocks re-loading by Hermes sessions
+off     restores model and preset. NO auto-load: the model loads on the
+        first request of a session, as usual
+status  shows the mode, model and router state
+verify  (with notification) is the model ready on the live router right now?
+check   (systemd timer) switches the mode off automatically at the deadline
+        (default 05:00; the hour is chosen with "on [HOUR]",
+        HERMES_GAMING_OFF_HOUR or "set-offhour HOUR" — persistent default
+        used by the plasmoid)
+set-offhour HOUR  sets the persistent auto-off hour
+        (~/.hermes/state/gaming-defaults.json); if the mode is active it
+        also updates the current session
+offhour  prints the currently effective auto-off hour (int 0-23)
+set-autooff 0|1  sets the persistent auto-off flag (0 = disabled);
+        if the mode is active it also updates the current session
+autooff  prints the effective auto-off flag (1 = enabled, 0 = disabled)
+
+How the lock works: the Hermes router scans the GGUFs in ~/.hermes/models
+at runtime SPAWN ("ensure local runtime"); the supervisor sweep (every
+30s) does NOT re-scan the models (it regenerates the presets only when
+the VRAM budget changes). This is why on/off get away with just
+hiding/restoring the GGUF + reloading the live router
+(GET /models?reload=1) and verifying the result from the model list.
+THE ROUTER PORT IS DYNAMIC: if 18434 is busy at spawn time the
+supervisor picks an ephemeral port recorded in
+runtimes/llamacpp/server.json; the script reads it on every call
+(fallback 18434). Hiding the GGUF into .gaming_hidden makes the staged
+model set empty, so no request can re-load the model; after the restore
+the first chat request loads it as usual.
+"""
+import configparser
+import fcntl
+import json
+import os
+import re
+import pathlib
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.request
+from datetime import datetime, timedelta
+
+HERMES = pathlib.Path.home() / ".hermes"
+RUNTIME = HERMES / "runtimes" / "llamacpp"
+STATE = HERMES / "state"
+STATE_FILE = STATE / "gaming.json"
+PRESET_BAK = STATE / "gaming-preset.ini.bak"
+MODELS = HERMES / "models"
+HIDDEN = MODELS / ".gaming_hidden"
+PRESET = RUNTIME / "presets.ini"
+SERVER_JSON = RUNTIME / "server.json"
+LOG = STATE / "gaming.log"
+FALLBACK_PORT = 18434
+
+
+def _alive(port):
+    """True if an HTTP server answers on the port (even with an auth
+    error): distinguishes a live router from a dead port (connection
+    refused)."""
+    try:
+        urllib.request.urlopen("http://127.0.0.1:%d/models" % port, timeout=2)
+        return True
+    except urllib.error.HTTPError:
+        return True
+    except Exception:
+        return False
+
+
+def router_port():
+    """Port of the LIVE router. Candidates in order: server.json (written
+    by the supervisor), then the base_url in config.yaml (the runtime
+    rewrites it when the router takes an ephemeral port), then 18434.
+    If the first candidate does not answer the next one is tried: covers
+    the double router-spawn case, where server.json is left on the dead
+    port while the live router sits on an ephemeral one recorded only in
+    config.yaml."""
+    cands = []
+    try:
+        with open(SERVER_JSON) as f:
+            url = json.load(f).get("base_url", "")
+        p = int(url.rsplit(":", 1)[1])
+        if 0 < p < 65536:
+            cands.append(p)
+    except Exception:
+        pass
+    try:
+        m = re.search(r"base_url:\s*https?://127\.0\.0\.1:(\d+)/",
+                      (HERMES / "config.yaml").read_text())
+        if m:
+            cands.append(int(m.group(1)))
+    except Exception:
+        pass
+    cands.append(FALLBACK_PORT)
+    seen = set()
+    cands = [p for p in cands if not (p in seen or seen.add(p))]
+    for p in cands:
+        if _alive(p):
+            return p
+    return cands[0]
+AUTO_OFF_HOUR = 5  # default assoluto; sovrascrivibile con "on [ORA]", env HERMES_GAMING_OFF_HOUR o "set-offhour ORA"
+DEFAULTS_FILE = STATE / "gaming-defaults.json"  # default persistente impostato dal plasmoid (set-offhour)
+
+
+def log(msg):
+    line = "[%s] %s" % (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), msg)
+    print(line)
+    try:
+        STATE.mkdir(exist_ok=True)
+        with open(LOG, "a") as f:
+            f.write(line + "\n")
+    except Exception:
+        pass
+
+
+def die(msg, code=1):
+    log("ERROR: " + msg)
+    sys.exit(code)
+
+
+def notify(title, body):
+    """Desktop notification (best effort): never alters the on/off flow or exit code."""
+    try:
+        subprocess.run(["notify-send", "-a", "hermes-gaming-tray", title, body],
+                       timeout=10, check=False)
+    except Exception:
+        pass
+
+
+def state():
+    try:
+        return json.loads(STATE_FILE.read_text())
+    except Exception:
+        return {}
+
+
+def api_key():
+    try:
+        return json.loads(SERVER_JSON.read_text())["api_key"]
+    except Exception:
+        pass
+    for pid in os.listdir("/proc"):  # fallback: cmdline di llama-server
+        if not pid.isdigit():
+            continue
+        try:
+            cmd = (pathlib.Path("/proc") / pid / "cmdline").read_bytes().split(b"\0")
+        except OSError:
+            continue
+        if any(b"llama-server" in x for x in cmd):
+            for i, x in enumerate(cmd):
+                if x == b"--api-key" and i + 1 < len(cmd):
+                    return cmd[i + 1].decode()
+    return ""
+
+
+def req(method, path, body=None, timeout=60):
+    url = "http://127.0.0.1:%d%s" % (router_port(), path)
+    data = json.dumps(body).encode() if body is not None else None
+    r = urllib.request.Request(url, data=data, method=method)
+    r.add_header("Authorization", "Bearer " + api_key())
+    if data:
+        r.add_header("Content-Type", "application/json")
+    with urllib.request.urlopen(r, timeout=timeout) as resp:
+        return json.loads(resp.read().decode() or "{}")
+
+
+def models_list():
+    return req("GET", "/models").get("data", [])
+
+
+def model_status(m):
+    return (m.get("status") or {}).get("value")
+
+
+def gguf_path(m):
+    args = (m.get("status") or {}).get("args") or []
+    for i, a in enumerate(args):
+        if a == "--model" and i + 1 < len(args):
+            return pathlib.Path(args[i + 1])
+    return None
+
+
+def preset_ggufs():
+    """GGUFs pointed to by the preset, even if the router is unreachable."""
+    out = []
+    try:
+        cp = configparser.RawConfigParser(strict=False)
+        cp.read_string(PRESET.read_text())
+        for sec in cp.sections():
+            p = cp[sec].get("model")
+            if p:
+                out.append((sec, pathlib.Path(p)))
+    except Exception:
+        pass
+    return out
+
+
+def reload_router():
+    try:
+        req("GET", "/models?reload=1")
+    except Exception as e:
+        log("warning: router reload failed (port %d: %s); the router will pick the state up on next start" % (router_port(), e))
+
+
+def deadline(since_iso, off_hour=None):
+    """Next off_hour:00 after the activation (default AUTO_OFF_HOUR)."""
+    if off_hour is None:
+        off_hour = AUTO_OFF_HOUR
+    since = datetime.fromisoformat(since_iso)
+    d = since.replace(hour=off_hour, minute=0, second=0, microsecond=0)
+    if d <= since:
+        d += timedelta(days=1)
+    return d
+
+
+def defaults_off_hour():
+    """Persistent auto-off hour default set by "set-offhour" (plasmoid), if present and valid."""
+    try:
+        h = int(json.loads(DEFAULTS_FILE.read_text())["off_hour"])
+        if 0 <= h <= 23:
+            return h
+    except Exception:
+        pass
+    return None
+
+
+def defaults_auto_off():
+    """Persistent auto-off flag set by "set-autooff" (plasmoid); enabled when absent."""
+    try:
+        return bool(json.loads(DEFAULTS_FILE.read_text()).get("auto_off", True))
+    except Exception:
+        return True
+
+
+def effective_off_hour(cli_hour=None):
+    """Auto-off hour resolution: CLI argument > HERMES_GAMING_OFF_HOUR env var > "set-offhour" > default."""
+    if cli_hour is not None:
+        h = cli_hour
+    else:
+        env = os.environ.get("HERMES_GAMING_OFF_HOUR")
+        if env is not None:
+            try:
+                h = int(env)
+            except ValueError:
+                die("invalid HERMES_GAMING_OFF_HOUR: %r (use an hour 0-23)" % env)
+        else:
+            h = defaults_off_hour()
+            if h is None:
+                h = AUTO_OFF_HOUR
+    if not (0 <= h <= 23):
+        die("invalid auto-off hour: %d (use 0-23)" % h)
+    return h
+
+
+def restore_files():
+    """Puts the hidden GGUFs back in ~/.hermes/models and the original preset."""
+    restored = False
+    if HIDDEN.exists():
+        for f in sorted(HIDDEN.iterdir()):
+            os.replace(f, MODELS / f.name)
+            log("restored %s" % f.name)
+            restored = True
+    if PRESET_BAK.exists():
+        PRESET.write_text(PRESET_BAK.read_text())
+        log("original preset restored")
+        restored = True
+    return restored
+
+
+def cmd_on(h=None):
+    off_hour = effective_off_hour(h)
+    auto_off = defaults_auto_off()
+    st = state()
+    if st.get("active"):
+        die("gaming mode is already active (since %s)" % st.get("since", "?"))
+    log("on: router port %d" % router_port())
+
+    router_down = False
+    gid, gguf = None, None
+    try:
+        m = None
+        for x in models_list():
+            if model_status(x) in ("loaded", "sleeping"):
+                m = x
+                break
+        if m is None:
+            for x in models_list():
+                m = x  # staged but not loaded
+                break
+        if m is None:
+            # router alive but no staged model: start from the preset
+            for sec, p in preset_ggufs():
+                gid, gguf = sec, p
+                break
+        else:
+            gid = m["id"]
+            gguf = gguf_path(m)
+    except Exception:
+        router_down = True
+        for sec, p in preset_ggufs():
+            gid, gguf = sec, p
+            break
+
+    if not gguf or not gguf.exists():
+        if not router_down:
+            die("no model to free (router has no staged models)")
+        die("no staged GGUF found in the preset and the router is unreachable")
+
+    if not router_down:
+        # 1) save the current preset
+        PRESET_BAK.write_text(PRESET.read_text())
+        # 2) unload the model from the GPU if loaded
+        m = next((x for x in models_list() if x["id"] == gid), None)
+        if m and model_status(m) in ("loaded", "sleeping"):
+            log("unloading %s from GPU ..." % gid)
+            try:
+                req("POST", "/models/unload", body={"model": gid}, timeout=120)
+            except Exception as e:
+                die("unload failed: %s (nothing done, model still in use)" % e)
+            for _ in range(60):
+                time.sleep(1)
+                mm = next((x for x in models_list() if x["id"] == gid), None)
+                if mm is None or model_status(mm) not in ("loaded", "sleeping"):
+                    break
+            else:
+                die("the model did not release VRAM (60s timeout)")
+            log("VRAM freed")
+
+    # 3) hide the GGUF: staged_models() becomes empty -> no auto-load
+    HIDDEN.mkdir(exist_ok=True)
+    target = HIDDEN / gguf.name
+    os.replace(gguf, target)
+    # 4) empty preset + reload
+    PRESET.write_text("# gaming mode active: model hidden in .gaming_hidden\n")
+    if not router_down:
+        reload_router()
+        time.sleep(1)
+        try:
+            remaining = [x["id"] for x in models_list()]
+            if gid in remaining:
+                # full rollback
+                os.replace(target, gguf)
+                if PRESET_BAK.exists():
+                    PRESET.write_text(PRESET_BAK.read_text())
+                reload_router()
+                die("the model is still visible in the router: rolled back, try again")
+        except Exception:
+            pass
+
+    hh = "%02d:00" % off_hour
+    STATE_FILE.write_text(json.dumps({
+        "active": True,
+        "since": datetime.now().isoformat(timespec="seconds"),
+        "model": gid,
+        "gguf": str(gguf),
+        "off_hour": off_hour,
+        "auto_off": auto_off,
+    }, indent=2))
+    if auto_off:
+        log("gaming mode ACTIVE: %s will not reload (auto-off at %s)" % (gid, hh))
+        print("OK: VRAM freed. %s stays blocked until you run: hermes-gaming off (auto-off at %s)" % (gid, hh))
+        notify("Gaming: ON", "GPU freed · auto-off at %s" % hh)
+    else:
+        log("gaming mode ACTIVE: %s will not reload (auto-off disabled)" % gid)
+        print("OK: VRAM freed. %s stays blocked until you run: hermes-gaming off (auto-off disabled)" % gid)
+        notify("Gaming: ON", "GPU freed · auto-off disabled")
+
+
+def cmd_off(auto=False):
+    st = state()
+    if not st.get("active"):
+        die("gaming mode is not active")
+    gid = st.get("model", "?")
+    log("off: router port %d" % router_port())
+    restore_files()
+    reload_router()
+    # verify the model comes back in the router's list (short polling:
+    # after the reload the router can take a few seconds to re-scan models/)
+    ok = None
+    waited = 0
+    while waited <= 60:
+        try:
+            present = [x["id"] for x in models_list()]
+            if gid in present:
+                ok = True
+                break
+            ok = False
+        except Exception:
+            ok = None  # no live router: the files are in place, it resumes on next start
+            break
+        time.sleep(5)
+        waited += 5
+    if ok is False:
+        log("ERROR: %s did not come back staged after the restore (waited %ds, port %d)" % (gid, waited, router_port()))
+        notify("Gaming off: model NOT available",
+               "%s is not in the router's model list (port %d): try on/off from the tray to force a reload." % (gid, router_port()))
+        die("model not visible after the restore — check with: hermes-gaming status")
+    off_hour = st.get("off_hour", AUTO_OFF_HOUR)
+    STATE_FILE.write_text(json.dumps({
+        "active": False,
+        "since": st.get("since"),
+        "off_at": datetime.now().isoformat(timespec="seconds"),
+        "model": gid,
+        "auto": bool(auto),
+        "off_hour": off_hour,
+    }, indent=2))
+    kind = "auto-off %02d:00" % off_hour if auto else "manual off"
+    if ok is None:
+        log("gaming mode DISABLED (%s): files restored, router not running (resumes on the next request/start)" % kind)
+        print("OK: gaming mode off (%s). The model is safe on disk; it will be back on the next request/Hermes start." % kind)
+        notify("Gaming off: model ready on disk",
+               "Router not running: the model will be ready again on the next runtime start.")
+    else:
+        log("gaming mode DISABLED (%s): %s staged again (no auto-load: loads on first request)" % (kind, gid))
+        print("OK: gaming mode off (%s). The model will reload on the first request from a Hermes session." % kind)
+        notify("Gaming off: model ready",
+               "Model ready: loads on first request.")
+
+
+def cmd_set_offhour(h):
+    """Sets the persistent auto-off hour (plasmoid setting):
+    updates the defaults file and, if the mode is active, the current session."""
+    if not (0 <= h <= 23):
+        die("invalid auto-off hour: %d (use 0-23)" % h)
+    tmp = DEFAULTS_FILE.with_suffix(".tmp")
+    tmp.write_text(json.dumps({"off_hour": h}, indent=2))
+    os.replace(tmp, DEFAULTS_FILE)
+    st = state()
+    if st.get("active"):
+        st["off_hour"] = h
+        tmpf = STATE_FILE.with_suffix(".tmp")
+        tmpf.write_text(json.dumps(st, indent=2))
+        os.replace(tmpf, STATE_FILE)
+        log("auto-off hour set to %02d:00 (active session updated)" % h)
+        print("OK: auto-off set to %02d:00 (active session updated)" % h)
+    else:
+        log("auto-off hour set to %02d:00 (applies from the next 'on')" % h)
+        print("OK: auto-off set to %02d:00 (applies from the next 'on')" % h)
+
+
+def cmd_offhour():
+    """Prints the effective auto-off hour (int): active session if any, else the default."""
+    st = state()
+    if st.get("active") and st.get("off_hour") is not None:
+        print(int(st["off_hour"]))
+    else:
+        h = defaults_off_hour()
+        print(h if h is not None else AUTO_OFF_HOUR)
+
+
+def cmd_set_autooff(enabled):
+    """Sets the persistent auto-off flag (plasmoid setting):
+    updates the defaults file and, if the mode is active, the current session."""
+    val = bool(enabled)
+    try:
+        d = json.loads(DEFAULTS_FILE.read_text())
+    except Exception:
+        d = {}
+    d["auto_off"] = val
+    tmp = DEFAULTS_FILE.with_suffix(".tmp")
+    tmp.write_text(json.dumps(d, indent=2))
+    os.replace(tmp, DEFAULTS_FILE)
+    st = state()
+    word = "disabled" if not val else "re-enabled"
+    if st.get("active"):
+        st["auto_off"] = val
+        tmpf = STATE_FILE.with_suffix(".tmp")
+        tmpf.write_text(json.dumps(st, indent=2))
+        os.replace(tmpf, STATE_FILE)
+        log("auto-off %s (active session updated)" % word)
+        print("OK: auto-off %s (active session updated)" % word)
+    else:
+        log("auto-off %s (applies from the next 'on')" % word)
+        print("OK: auto-off %s (applies from the next 'on')" % word)
+
+
+def cmd_autooff():
+    """Prints the effective auto-off flag (1/0): active session if any, else the default."""
+    st = state()
+    if st.get("active"):
+        print(1 if st.get("auto_off", True) else 0)
+    else:
+        print(1 if defaults_auto_off() else 0)
+
+
+def cmd_check():
+    st = state()
+    if not st.get("active") or "since" not in st:
+        return
+    if st.get("auto_off") is False:
+        return  # auto-off disabled: no deadline
+    off_hour = st.get("off_hour", AUTO_OFF_HOUR)
+    if datetime.now() >= deadline(st["since"], off_hour):
+        log("past the %02d:00 deadline -> auto-off" % off_hour)
+        cmd_off(auto=True)
+
+
+def cmd_verify():
+    """Ad-hoc check (with notification): is the model ready on the live router?
+    Read-only, changes no state. Exits 0 if ready, 1 otherwise."""
+    log("verify: router port %d" % router_port())
+    st = state()
+    gid = st.get("model") or None
+    try:
+        present = [x["id"] for x in models_list()]
+    except Exception:
+        present = None
+    if present is None:
+        log("verify: router unreachable — model ready on disk, resumes on the next runtime spawn")
+        notify("Gaming: model ready on disk",
+               "Local runtime router stopped: the model will be ready again on the next runtime start.")
+        sys.exit(1)
+    if gid is None:
+        gid = present[0] if present else "?"
+        ready = bool(present)
+    else:
+        ready = gid in present
+    if ready:
+        log("verify: model ready — %s in the router's model list" % gid)
+        notify("Gaming: model ready",
+               "Model in the router's model list (port %d): loads on first request." % router_port())
+        sys.exit(0)
+    log("verify: model NOT available — %s is not in the router's model list" % gid)
+    notify("Gaming: model NOT available",
+           "%s is not in the router's model list (port %d): try on/off from the tray to force a reload." % (gid, router_port()))
+    sys.exit(1)
+
+
+def cmd_status():
+    st = state()
+    off_hour = st.get("off_hour", AUTO_OFF_HOUR)
+    if st.get("active"):
+        print("gaming mode: ACTIVE since %s" % st.get("since", "?"))
+        if "since" in st:
+            print("auto-off scheduled for: %s (%02d:00)" % (deadline(st["since"], off_hour).strftime("%Y-%m-%d %H:%M"), off_hour))
+    elif st.get("off_at"):
+        print("gaming mode: disabled (last off: %s%s)" % (
+            st["off_at"], " — auto %02d:00" % off_hour if st.get("auto") else ""))
+    else:
+        print("gaming mode: never activated")
+    if HIDDEN.exists():
+        for f in sorted(HIDDEN.iterdir()):
+            print("hidden in .gaming_hidden: %s (%.1f GB)" % (f.name, f.stat().st_size / 1e9))
+    print("router : port %d (server.json)" % router_port())
+    try:
+        for m in models_list():
+            print("router : model %s — state %s" % (m["id"], model_status(m)))
+    except Exception:
+        print("router : not reachable (no llama server running)")
+
+
+def main():
+    STATE.mkdir(exist_ok=True)
+    args = sys.argv[1:]
+    cmd = args[0] if args else "status"
+    handlers = {"on": cmd_on, "off": cmd_off, "check": cmd_check, "status": cmd_status,
+                "verify": cmd_verify,
+                "set-offhour": cmd_set_offhour, "offhour": cmd_offhour,
+                "set-autooff": cmd_set_autooff, "autooff": cmd_autooff}
+    if cmd not in handlers:
+        die("unknown command: %s (usage: on [HOUR] | set-offhour HOUR | offhour | set-autooff 0|1 | autooff | off | status | verify | check)" % cmd)
+    # "on [HOUR]" / "set-offhour HOUR": auto-off hour (0-23), e.g. "on 19" -> auto-off at 19:00
+    on_hour = None
+    if cmd in ("on", "set-offhour") and len(args) > 1:
+        try:
+            on_hour = int(args[1])
+        except ValueError:
+            die("invalid hour: %r (use 0-23, e.g. 'on 19')" % args[1])
+    if cmd == "set-offhour" and on_hour is None:
+        die("set-offhour requires an hour 0-23, e.g. 'set-offhour 19'")
+    # "set-autooff 0|1": persistent auto-off flag (0 = disabled)
+    autooff_val = None
+    if cmd == "set-autooff":
+        if len(args) < 2 or args[1] not in ("0", "1"):
+            die("set-autooff requires 0 (disable) or 1 (enable)")
+        autooff_val = args[1] == "1"
+    # simple lock against concurrent on/off/check (e.g. timer + user)
+    lock = open(STATE / "gaming.lock", "w")
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        die("another hermes-gaming operation is already running, try again in a moment")
+    try:
+        if cmd == "on":
+            cmd_on(on_hour)
+        elif cmd == "set-offhour":
+            cmd_set_offhour(on_hour)
+        elif cmd == "set-autooff":
+            cmd_set_autooff(autooff_val)
+        else:
+            handlers[cmd]()
+    finally:
+        fcntl.flock(lock, fcntl.LOCK_UN)
+
+
+if __name__ == "__main__":
+    main()

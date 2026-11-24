@@ -1,0 +1,22 @@
+{
+    "KPlugin": {
+        "Authors": [
+            {
+                "Email": "",
+                "Name": "essemito2"
+            }
+        ],
+        "Category": "Utilities",
+        "Description": "System tray icon for the Hermes Agent gaming mode: frees the GPU VRAM used by the local llama.cpp model and restores it on demand or at a scheduled auto-off time. Double-click to toggle. Based on Scriptinator (GPL).",
+        "Icon": "input-gamepad",
+        "Id": "com.hermes.gaming-tray",
+        "License": "GPL",
+        "Name": "Hermes Gaming Tray",
+        "Version": "1.0.0",
+        "Website": "https://github.com/essemito2/hermes-gaming-tray"
+    },
+    "X-Plasma-NotificationArea": "true",
+    "X-Plasma-NotificationAreaCategory": "SystemServices",
+    "X-Plasma-API-Minimum-Version": "6.0",
+    "KPackageStructure": "Plasma/Applet"
+}

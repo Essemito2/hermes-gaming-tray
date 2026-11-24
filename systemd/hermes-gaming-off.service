@@ -1,0 +1,6 @@
+[Unit]
+Description=hermes-gaming auto-off check (turns gaming mode off after the configured hour)
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/hermes-gaming check
