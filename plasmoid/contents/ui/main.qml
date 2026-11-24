@@ -28,10 +28,17 @@ PlasmoidItem {
     property bool autoOffEnabled: true
 
     // Commands: helper scripts shipped inside the applet package
-    readonly property string statusCmd: Qt.resolvedUrl("hg-state.sh")
-    readonly property string toggleCmd: Qt.resolvedUrl("hg-toggle.sh")
+    // plasmashell resolves relative URLs to file:// URIs, but the
+    // executable engine hands the string to /bin/sh: a plain
+    // filesystem path is required.
+    function toPath(u: string): string {
+        return u.startsWith("file://") ? u.slice(7) : u
+    }
+
+    readonly property string statusCmd: toPath(Qt.resolvedUrl("hg-state.sh"))
+    readonly property string toggleCmd: toPath(Qt.resolvedUrl("hg-toggle.sh"))
     // persistent auto-off flag toggle (0 = disabled, 1 = enabled)
-    readonly property string autooffCmdBase: Qt.resolvedUrl("hg-set-autooff.sh")
+    readonly property string autooffCmdBase: toPath(Qt.resolvedUrl("hg-set-autooff.sh"))
 
     // Common entry point for the double click and the Enable/Disable menu entry
     function toggle() {

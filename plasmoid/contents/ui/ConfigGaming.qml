@@ -16,9 +16,16 @@ import org.kde.kcmutils as KCM
 KCM.SimpleKCM {
     id: root
 
-    readonly property string setHourCmd: Qt.resolvedUrl("hg-set-offhour.sh")
-    readonly property string currentHourCmd: Qt.resolvedUrl("hg-current-offhour.sh")
-    readonly property string setAutoOffCmd: Qt.resolvedUrl("hg-set-autooff.sh")
+    // plasmashell resolves relative URLs to file:// URIs, but the
+    // executable engine hands the string to /bin/sh: a plain
+    // filesystem path is required.
+    function toPath(u: string): string {
+        return u.startsWith("file://") ? u.slice(7) : u
+    }
+
+    readonly property string setHourCmd: toPath(Qt.resolvedUrl("hg-set-offhour.sh"))
+    readonly property string currentHourCmd: toPath(Qt.resolvedUrl("hg-current-offhour.sh"))
+    readonly property string setAutoOffCmd: toPath(Qt.resolvedUrl("hg-set-autooff.sh"))
 
     // Result of the last apply (filled from the script markers)
     property string applyStatus: ""
