@@ -42,6 +42,7 @@ import subprocess
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from datetime import datetime, timedelta
 
@@ -83,13 +84,15 @@ def router_port():
     try:
         with open(SERVER_JSON) as f:
             url = json.load(f).get("base_url", "")
-        p = int(url.rsplit(":", 1)[1])
-        if 0 < p < 65536:
+        # base_url may carry a path (e.g. "http://127.0.0.1:49217/v1"):
+        # urlparse handles both formats (host:port and host:port/path)
+        p = urllib.parse.urlparse(url).port
+        if p:
             cands.append(p)
     except Exception:
         pass
     try:
-        m = re.search(r"base_url:\s*https?://127\.0\.0\.1:(\d+)/",
+        m = re.search(r"base_url:\s*https?://127\.0\.0\.1:(\d+)(?:/|$)",
                       (HERMES / "config.yaml").read_text())
         if m:
             cands.append(int(m.group(1)))
