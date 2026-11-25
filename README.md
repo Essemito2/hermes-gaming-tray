@@ -106,5 +106,5 @@ are kept.
 
 - `hermes-gaming`, `install.sh`, systemd units, this README: **MIT** (see [LICENSE](LICENSE))
 - `plasmoid/` (applet UI): **GPL-3.0-or-later** — derived from
-  [Scriptinator](https://store.kde.org/p/2089502/) by tubbadu
+  [Scriptnator](https://store.kde.org/p/2089502/) by tubbadu
   (see [plasmoid/LICENSE](plasmoid/LICENSE))

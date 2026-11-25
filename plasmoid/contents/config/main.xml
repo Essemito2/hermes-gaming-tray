@@ -9,5 +9,9 @@
       <default>5</default>
       <label>Auto-off hour (0-23)</label>
     </entry>
+    <entry name="doubleClickToggle" type="Bool">
+      <default>true</default>
+      <label>Toggle gaming mode with double click</label>
+    </entry>
   </group>
 </kcfg>

@@ -151,7 +151,13 @@ PlasmoidItem {
         id: mouseArea
         anchors.fill: parent
         acceptedButtons: Qt.LeftButton // the right button goes to the plasmashell menu (with our actions)
-        onDoubleClicked: root.toggle()
+        onDoubleClicked: {
+            // Settings tab flag (main.xml "doubleClickToggle", default true):
+            // undefined means "not saved yet" and counts as enabled.
+            if (Plasmoid.configuration.doubleClickToggle !== false) {
+                root.toggle()
+            }
+        }
     }
 
     Kirigami.Icon {

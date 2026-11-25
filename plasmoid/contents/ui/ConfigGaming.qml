@@ -238,5 +238,18 @@ KCM.SimpleKCM {
             }
             implicitHeight: Math.max(22, statusLabel.implicitHeight)
         }
+        // Local KConfig flag only (no script, no status row): main.qml reads
+        // it on every double click, so there is nothing to prefill or apply.
+        CheckBox {
+            id: doubleClickCheck
+            Kirigami.FormData.label: i18n("Toggle with double click")
+            Layout.fillWidth: true
+            checked: Plasmoid.configuration.doubleClickToggle === undefined
+                ? true
+                : Plasmoid.configuration.doubleClickToggle
+            onCheckedChanged: {
+                Plasmoid.configuration.doubleClickToggle = doubleClickCheck.checked
+            }
+        }
     }
 }
