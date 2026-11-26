@@ -114,6 +114,40 @@ vram_text() {
     esac
 }
 
+# -> "VRAM free: 15.5 GiB" | "shared RAM: 7.8 GiB free" | "VRAM n/d"
+# VRAM available for gaming (gaming ON: model offloaded, used ≈ compositor
+# baseline). Same source priority and fallbacks as vram_text().
+vram_free_text() {
+    _src=$(detect_vram_source)
+    case "$_src" in
+        amd:*)
+            _dev="${_src#amd:}"
+            _used=$(cat "$_dev/mem_info_vram_used" 2>/dev/null)
+            _total=$(cat "$_dev/mem_info_vram_total" 2>/dev/null)
+            case "$_used$_total" in '' | *[!0-9]*) printf 'VRAM n/d' ;; *)
+                printf 'VRAM free: %s GiB' "$(bytes_gib $(( _total - _used )))"
+                ;;
+            esac
+            ;;
+        nvidia)
+            _line=$(nvidia-smi --query-gpu=memory.used,memory.total --format=csv,noheader,nounits 2>/dev/null | head -n1)
+            _used=$(printf '%s' "$_line" | cut -d, -f1 | tr -d ' ')
+            _total=$(printf '%s' "$_line" | cut -d, -f2 | tr -d ' ')
+            case "$_used$_total" in '' | *[!0-9]*) printf 'VRAM n/d' ;; *)
+                printf 'VRAM free: %s GiB' "$(bytes_gib $(( (_total - _used) * 1048576 )))"
+                ;;
+            esac
+            ;;
+        shared)
+            _avail=$(awk '/^MemAvailable:/ { printf "%.1f", $2 / 1048576 }' /proc/meminfo)
+            printf 'shared RAM: %s GiB free' "$_avail"
+            ;;
+        *)
+            printf 'VRAM n/d'
+            ;;
+    esac
+}
+
 ICON="$BASE/icons/gamepad-off.svg"
 HEAD="Hermes Gaming"
 BODY="Gaming mode: OFF · Hermes available · $(vram_text) · $CLICK-click to enable"
@@ -179,7 +213,7 @@ if [ "$(get_bool active)" = "true" ]; then
         OFF_TXT="at $(printf '%02d:00' "$OFF_HOUR")"
     fi
 
-    BODY="Gaming mode: ON$DUR_TXT · auto-off $OFF_TXT · $CLICK-click to disable"
+    BODY="Gaming mode: ON$DUR_TXT · auto-off $OFF_TXT · $(vram_free_text) · $CLICK-click to disable"
 fi
 
 echo "{IconStart}$ICON{IconEnd}"
