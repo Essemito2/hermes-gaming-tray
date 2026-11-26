@@ -7,7 +7,7 @@
             }
         ],
         "Category": "Utilities",
-        "Description": "System tray icon for the Hermes Agent gaming mode: frees the GPU VRAM used by the local llama.cpp model and restores it on demand or at a scheduled auto-off time. Double-click to toggle. Based on Scriptnator (GPL).",
+        "Description": "System tray icon for the Hermes Agent gaming mode: frees the GPU VRAM used by the local llama.cpp model and restores it on demand or at a scheduled auto-off time. Click to toggle. Based on Scriptnator (GPL).",
         "Icon": "input-gamepad",
         "Id": "com.hermes.gaming-tray",
         "License": "GPL",

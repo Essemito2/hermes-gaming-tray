@@ -4,7 +4,7 @@ A **KDE Plasma 6 system tray applet** for [Hermes Agent](https://hermes-agent.no
 **gaming mode**: it frees the GPU VRAM occupied by your local [llama.cpp](https://github.com/ggml-org/llama.cpp)
 model so you can game, and restores the model on demand or at a scheduled auto-off time.
 
-- **Double-click** the tray icon → toggle gaming mode
+- **Click** the tray icon → toggle gaming mode (single click by default; double-click mode can be enabled in the **Options** tab)
 - **Gaming mode ON** → the model is unloaded from the GPU and locked out of the router: VRAM is *fully* freed (the model cannot be re-loaded by any Hermes session)
 - **Gaming mode OFF** → everything is restored; the model loads again on the first chat request, exactly like usual (no auto-load)
 - **Auto-off** → the mode switches itself off at a configurable hour (default 05:00), driven by a systemd user timer
@@ -39,10 +39,10 @@ port are auto-detected on every call.
 
 | Action | Effect |
 |---|---|
-| double-click the tray icon | toggle gaming mode |
-| right-click → *Enable/Disable gaming mode* | same as double-click |
+| click the tray icon | toggle gaming mode (single click by default; double-click mode via the Options tab) |
+| right-click → *Enable/Disable gaming mode* | same as clicking the icon |
 | right-click → *Disable/Enable auto-off* | on/off the scheduled auto-off (persistent) |
-| right-click → *Configure…* → **Gaming** tab | set the auto-off hour and toggle auto-off |
+| right-click → *Configure…* → **Options** tab | set the auto-off hour, toggle auto-off, switch click mode |
 
 The tooltip shows the current state, the session duration and the auto-off countdown.
 
