@@ -28,9 +28,95 @@ fmt_dur() {
     fi
 }
 
+# --- VRAM probe (read-only, cached) ------------------------------------------
+# Source priority:
+#   1. sysfs mem_info_vram_total/used (amdgpu; any driver exposing it)
+#   2. nvidia-smi (NVIDIA)
+#   3. Intel GPU without a vram counter -> "n/d"
+#   4. otherwise (shared RAM / CPU-only) -> free system RAM
+# Detection runs once; the result is cached in gaming-tray-vram-source
+# (delete that file to force a re-probe after a hardware change).
+# Test hook: HERMES_GAMING_VRAM_SOURCE=amd:<devdir>|nvidia|intel|shared
+VRAM_CACHE="$HOME/.hermes/state/gaming-tray-vram-source"
+
+bytes_gib() { awk -v b="$1" 'BEGIN { printf "%.1f", b / 1073741824 }'; }
+
+detect_vram_source() {
+    if [ -n "${HERMES_GAMING_VRAM_SOURCE:-}" ]; then
+        printf '%s' "$HERMES_GAMING_VRAM_SOURCE"
+        return
+    fi
+    if [ -f "$VRAM_CACHE" ]; then
+        printf '%s' "$(cat "$VRAM_CACHE" 2>/dev/null)"
+        return
+    fi
+    # 1) any drm device exposing mem_info_vram_total (bytes); pick the largest
+    _src="shared"
+    _dev=""
+    _best=-1
+    for _f in /sys/class/drm/card[0-9]*/device/mem_info_vram_total; do
+        [ -r "$_f" ] || continue
+        _t=$(cat "$_f" 2>/dev/null)
+        case "$_t" in '' | *[!0-9]*) continue ;; esac
+        if [ "$_t" -gt 0 ] && [ "$_t" -gt "$_best" ]; then
+            _best="$_t"
+            _dev=$(cd "$(dirname "$_f")" && pwd)
+        fi
+    done
+    [ -n "$_dev" ] && _src="amd:$_dev"
+    # 2) NVIDIA (on hybrid laptops the dGPU wins over the iGPU)
+    if [ "$_src" = "shared" ] && command -v nvidia-smi >/dev/null 2>&1; then
+        _mt=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null | head -n1)
+        case "$_mt" in '' | *[!0-9]*) ;; *) _src="nvidia" ;; esac
+    fi
+    # 3) Intel without a vram counter -> n/d
+    if [ "$_src" = "shared" ]; then
+        for _v in /sys/class/drm/card[0-9]*/device/vendor; do
+            if [ "$(cat "$_v" 2>/dev/null)" = "0x8086" ]; then
+                _src="intel"
+                break
+            fi
+        done
+    fi
+    printf '%s' "$_src" > "$VRAM_CACHE" 2>/dev/null
+    printf '%s' "$_src"
+}
+
+# -> "VRAM 15.5/16.0 GiB" | "shared RAM: 7.8 GiB free" | "VRAM n/d"
+vram_text() {
+    _src=$(detect_vram_source)
+    case "$_src" in
+        amd:*)
+            _dev="${_src#amd:}"
+            _used=$(cat "$_dev/mem_info_vram_used" 2>/dev/null)
+            _total=$(cat "$_dev/mem_info_vram_total" 2>/dev/null)
+            case "$_used$_total" in '' | *[!0-9]*) printf 'VRAM n/d' ;; *)
+                printf 'VRAM %s/%s GiB' "$(bytes_gib "$_used")" "$(bytes_gib "$_total")"
+                ;;
+            esac
+            ;;
+        nvidia)
+            _line=$(nvidia-smi --query-gpu=memory.used,memory.total --format=csv,noheader,nounits 2>/dev/null | head -n1)
+            _used=$(printf '%s' "$_line" | cut -d, -f1 | tr -d ' ')
+            _total=$(printf '%s' "$_line" | cut -d, -f2 | tr -d ' ')
+            case "$_used$_total" in '' | *[!0-9]*) printf 'VRAM n/d' ;; *)
+                printf 'VRAM %s/%s GiB' "$(bytes_gib $(( _used * 1048576 )))" "$(bytes_gib $(( _total * 1048576 )))"
+                ;;
+            esac
+            ;;
+        shared)
+            _avail=$(awk '/^MemAvailable:/ { printf "%.1f", $2 / 1048576 }' /proc/meminfo)
+            printf 'shared RAM: %s GiB free' "$_avail"
+            ;;
+        *)
+            printf 'VRAM n/d'
+            ;;
+    esac
+}
+
 ICON="$BASE/icons/gamepad-off.svg"
 HEAD="Hermes Gaming"
-BODY="Gaming mode: OFF · Hermes available · $CLICK-click to enable"
+BODY="Gaming mode: OFF · Hermes available · $(vram_text) · $CLICK-click to enable"
 STATUS="passive"
 
 # effective auto-off flag: active session if any, else the persistent default

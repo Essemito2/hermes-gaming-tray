@@ -12,7 +12,7 @@
         "Id": "com.hermes.gaming-tray",
         "License": "GPL",
         "Name": "Hermes Gaming Tray",
-        "Version": "1.0.0",
+        "Version": "1.1.0",
         "Website": "https://github.com/essemito2/hermes-gaming-tray"
     },
     "X-Plasma-NotificationArea": "true",

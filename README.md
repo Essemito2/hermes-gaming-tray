@@ -44,7 +44,8 @@ port are auto-detected on every call.
 | right-click → *Disable/Enable auto-off* | on/off the scheduled auto-off (persistent) |
 | right-click → *Configure…* → **Options** tab | set the auto-off hour, toggle auto-off, switch click mode |
 
-The tooltip shows the current state, the session duration and the auto-off countdown.
+The tooltip shows the current state, the session duration, the auto-off
+countdown and — while gaming mode is OFF — the VRAM in use.
 
 ### CLI
 
@@ -92,6 +93,9 @@ Auto-off is a **systemd user timer** (`hermes-gaming-off.timer`) that runs
   Tested with **Hermes Agent v0.23.4**; if a future Hermes version changes them, run
   `hermes-gaming verify` to diagnose.
 - Without a systemd user session the auto-off timer does not run (the tray still works).
+- VRAM display coverage: **tested on AMD** (sysfs `mem_info_vram_*`). The NVIDIA
+  path (`nvidia-smi`), the Intel fallback (shows `n/d`) and the shared-RAM fallback
+  (shows free system RAM) are implemented but **not tested**.
 
 ## Uninstall
 
