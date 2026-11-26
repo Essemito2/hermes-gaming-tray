@@ -8,6 +8,9 @@
 BASE="$(cd "$(dirname "$0")" && pwd)"
 STATE_FILE="${HERMES_GAMING_STATE:-$HOME/.hermes/state/gaming.json}"
 DEFAULTS_FILE="${HERMES_GAMING_DEFAULTS:-$HOME/.hermes/state/gaming-defaults.json}"
+# $1 = click mode for the tooltip hint: "single" (default) or "double"
+# (passed by main.qml from the settings tab flag)
+CLICK="${1:-single}"
 
 # JSON field extraction (file written by hermes-gaming, one field per line)
 get_bool() { sed -n 's/.*"'$1'": *\(true\|false\).*/\1/p' "$STATE_FILE" 2>/dev/null | head -n1; }
@@ -27,7 +30,7 @@ fmt_dur() {
 
 ICON="$BASE/icons/gamepad-off.svg"
 HEAD="Hermes Gaming"
-BODY="Gaming mode: OFF · Hermes available · double-click to enable"
+BODY="Gaming mode: OFF · Hermes available · $CLICK-click to enable"
 STATUS="passive"
 
 # effective auto-off flag: active session if any, else the persistent default
@@ -90,7 +93,7 @@ if [ "$(get_bool active)" = "true" ]; then
         OFF_TXT="at $(printf '%02d:00' "$OFF_HOUR")"
     fi
 
-    BODY="Gaming mode: ON$DUR_TXT · auto-off $OFF_TXT · double-click to disable"
+    BODY="Gaming mode: ON$DUR_TXT · auto-off $OFF_TXT · $CLICK-click to disable"
 fi
 
 echo "{IconStart}$ICON{IconEnd}"

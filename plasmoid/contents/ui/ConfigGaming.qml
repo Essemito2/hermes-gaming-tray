@@ -31,10 +31,13 @@ KCM.SimpleKCM {
     property string applyStatus: ""
     property bool applyOk: false
 
-    // Re-entry guard: true while the prefill writes the SpinBox
-    property bool prefilling: false
-    // Re-entry guard: true while the prefill writes the CheckBox
-    property bool prefillingAutoOff: false
+    // Re-entry guards: true from creation until the prefill data has been
+    // handled. They also cover the initial value/checked bindings (evaluated
+    // at component creation), which would otherwise trigger a spurious apply
+    // every time the tab opens and could hit the hermes-gaming lock.
+    property bool prefilling: true
+    // Re-entry guard: same, for the auto-off CheckBox
+    property bool prefillingAutoOff: true
     // Set script currently in flight
     property bool setRunning: false
     // Hour to apply (debounced)
@@ -101,6 +104,19 @@ KCM.SimpleKCM {
         onTriggered: root.issueSets()
     }
 
+    // Safety net for the prefill guards: if the prefill command never
+    // reports back the guards (which start true) must not stay locked
+    Timer {
+        id: prefillGuardTimer
+        interval: 3000
+        repeat: false
+        running: true
+        onTriggered: {
+            root.prefilling = false
+            root.prefillingAutoOff = false
+        }
+    }
+
     // Safety net: the set result must not be left hanging
     Timer {
         id: setTimeoutTimer
@@ -145,6 +161,11 @@ KCM.SimpleKCM {
                     }
                     root.prefillingAutoOff = false
                 }
+                // Prefill window over (markers present or not): from here on
+                // user changes must apply, and the safety timer is no longer needed
+                prefillGuardTimer.stop()
+                root.prefilling = false
+                root.prefillingAutoOff = false
             } else if (cmd.startsWith(root.setHourCmd) || cmd.startsWith(root.setAutoOffCmd)) {
                 root.setRunning = false
                 setTimeoutTimer.stop()
@@ -244,8 +265,9 @@ KCM.SimpleKCM {
             id: doubleClickCheck
             Kirigami.FormData.label: i18n("Toggle with double click")
             Layout.fillWidth: true
+            // Default (fresh install): unchecked = single click toggles
             checked: Plasmoid.configuration.doubleClickToggle === undefined
-                ? true
+                ? false
                 : Plasmoid.configuration.doubleClickToggle
             onCheckedChanged: {
                 Plasmoid.configuration.doubleClickToggle = doubleClickCheck.checked

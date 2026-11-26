@@ -1,7 +1,8 @@
 // hermes-gaming-tray — notification area applet.
 // Derived from Scriptinator (GPL-3.0-or-later, tubbadu) — same "executable"
 // DataSource pattern with markers on stdout; simplified here: no custom
-// configuration beyond the settings tab, double click = toggle,
+// configuration beyond the settings tab, single click = toggle (double
+// click only if enabled in the settings tab),
 // right click = contextual menu (Plasmoid.contextualActions) plus the
 // "Configure..." entry added by the shell.
 import QtQuick
@@ -35,7 +36,11 @@ PlasmoidItem {
         return u.startsWith("file://") ? u.slice(7) : u
     }
 
-    readonly property string statusCmd: toPath(Qt.resolvedUrl("hg-state.sh"))
+    // The click mode (settings tab flag) is passed to the helper as an
+    // argument so the tooltip hint reflects it; undefined = single click
+    // (the fresh-install default)
+    readonly property string statusCmd: toPath(Qt.resolvedUrl("hg-state.sh")) + " " +
+        (Plasmoid.configuration.doubleClickToggle === true ? "double" : "single")
     readonly property string toggleCmd: toPath(Qt.resolvedUrl("hg-toggle.sh"))
     // persistent auto-off flag toggle (0 = disabled, 1 = enabled)
     readonly property string autooffCmdBase: toPath(Qt.resolvedUrl("hg-set-autooff.sh"))
@@ -151,10 +156,17 @@ PlasmoidItem {
         id: mouseArea
         anchors.fill: parent
         acceptedButtons: Qt.LeftButton // the right button goes to the plasmashell menu (with our actions)
+        // Settings tab flag (main.xml "doubleClickToggle", default false):
+        // undefined means "not saved yet" and counts as the default (single click).
+        onClicked: {
+            // single-click mode (checkbox unchecked): one click toggles
+            if (Plasmoid.configuration.doubleClickToggle !== true) {
+                root.toggle()
+            }
+        }
         onDoubleClicked: {
-            // Settings tab flag (main.xml "doubleClickToggle", default true):
-            // undefined means "not saved yet" and counts as enabled.
-            if (Plasmoid.configuration.doubleClickToggle !== false) {
+            // double-click mode (checkbox checked): only the double click toggles
+            if (Plasmoid.configuration.doubleClickToggle === true) {
                 root.toggle()
             }
         }
@@ -187,6 +199,20 @@ PlasmoidItem {
         onTriggered: {
             // light poll: keeps the icon up to date with external changes
             // (e.g. the scheduled auto-off)
+            if (!root.busy) {
+                executable.exec(root.statusCmd)
+            }
+        }
+    }
+
+    // Instant tooltip refresh: Plasmoid.configuration is a KConfigPropertyMap
+    // (a QQmlPropertyMap) that emits valueChanged(key, value) on every write —
+    // including writes from the separate settings-tab component. Re-running the
+    // state script right away keeps the tooltip in sync with the new setting
+    // instead of waiting up to the next 15 s poll.
+    Connections {
+        target: Plasmoid.configuration
+        function onValueChanged(key, value) {
             if (!root.busy) {
                 executable.exec(root.statusCmd)
             }

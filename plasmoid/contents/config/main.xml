@@ -14,7 +14,7 @@
       <label>Auto-off enabled</label>
     </entry>
     <entry name="doubleClickToggle" type="Bool">
-      <default>true</default>
+      <default>false</default>
       <label>Toggle gaming mode with double click</label>
     </entry>
   </group>
