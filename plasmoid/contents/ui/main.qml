@@ -55,6 +55,16 @@ PlasmoidItem {
         executable.exec(root.toggleCmd)
     }
 
+    // Standard "Keyboard Shortcuts" tab: the applet's global shortcut
+    // (Applet::setGlobalShortcut -> activationAction) emits activated()
+    // when triggered; map it to the same action as a click.
+    Connections {
+        target: plasmoid
+        function onActivated() {
+            root.toggle();
+        }
+    }
+
     // Toggles the persistent auto-off flag (also updates the active session right away)
     function setAutooff(enabled) {
         if (root.busy) {

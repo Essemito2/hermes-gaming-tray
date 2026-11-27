@@ -1,5 +1,5 @@
 [Unit]
-Description=hermes-gaming auto-off check (turns gaming mode off after the configured hour)
+Description=hermes-gaming auto-off check (spegne la modalità gaming dopo le 05:00)
 
 [Service]
 Type=oneshot
